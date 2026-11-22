@@ -1,4 +1,4 @@
-"""Compose and render Phase Shift v3 in the directory containing this script.
+"""Compose and render Phase Shift v3.
 
 Python 3.10+, FFmpeg with libx264 and AAC, and these Python packages:
     python -m pip install numpy scipy soundfile opencv-python
@@ -22,7 +22,7 @@ from scipy import signal
 
 RATE = 48_000
 FPS = 60
-SIZE = 960
+SIZE = 1080
 BEAT = 60 / 96
 BAR = 4 * BEAT
 TAU = 2 * np.pi
@@ -108,126 +108,154 @@ def lead_controls(t):
         pitch[start:start + glide] = last_pitch + (note - last_pitch) * ease(np.arange(glide) / glide)
         pitch[start:end] += .10 * ease((age - .25) / .38) * np.sin(TAU * 4.7 * age)
         last_pitch = note
-    phase = np.remainder(np.cumsum(hz(pitch)) * (TAU / RATE), TAU)
+    phase = np.cumsum(hz(pitch)) * (TAU / RATE)
     return phase, gate, accent
 
 
-# A drawing is one traversal per musical period. The 120 Hz geometry tables
-# interpolate in both time and phase; geometry and timbre therefore move together.
-TABLE = 512
-TICKS = 120
+# Both bodies are scanned during one note period. Cube edges form a closed
+# walk, so changing faces never sends the beam through the middle of a face.
+TABLE = 768
+BODY = 384
+U = np.arange(BODY) / BODY
+A = TAU * U
+VERTICES = np.array([(x, y, z) for z in (-1, 1)
+                     for y in (-1, 1) for x in (-1, 1)], dtype=float)
+WALK = [0, 1, 5, 1, 3, 7, 5, 4, 0, 2, 3, 7, 6, 2, 6, 4, 0]
+
 
 def progress(t, start, end):
     return ease((t - start) / (end - start))
 
 
-def boat(t, returning):
-    if returning:
-        sail = 1 - progress(t, 52.5, 57.5)
-        position = .35 * (1 - progress(t, 50, 55))
-        hull = 1 - progress(t, 56.0, 58.5)
+def blend(a, b, amount):
+    return a + amount * (b - a)
+
+
+def rotate(points, angle):
+    c, s = np.cos(angle), np.sin(angle)
+    return points @ np.array([[c, s], [-s, c]])
+
+
+def cube(yaw, tilt, depth, size, roll=0):
+    vertices = VERTICES.copy()
+    vertices[:, 2] *= depth
+    vertices[:, [0, 2]] = rotate(vertices[:, [0, 2]], yaw)
+    vertices[:, [1, 2]] = rotate(vertices[:, [1, 2]], tilt)
+    xy = rotate(vertices[:, :2], roll) * size / (1 - .085 * vertices[:, 2:])
+    path = xy[WALK]
+    length = np.r_[0., np.cumsum(np.linalg.norm(np.diff(path, axis=0), axis=1))]
+    return np.column_stack([np.interp(U * length[-1], length, axis) for axis in path.T])
+
+
+def ring(radius, flatness, angle):
+    return rotate(np.column_stack((np.cos(A), flatness * np.sin(A))), angle) * radius
+
+
+def globe(t, opening, radius, center=(0, 0), spin=0):
+    # The same continuous equator expands into five turns across the sphere.
+    longitude = TAU * 5 * U + spin
+    latitude = (U - .5) * np.pi * opening
+    radial = np.cos(latitude)
+    xyz = np.column_stack((radial * np.cos(longitude),
+                           radial * np.sin(longitude),
+                           np.sin(latitude)))
+    tilt = .58 + .11 * np.sin(.31 * t)
+    y = xyz[:, 1] * np.cos(tilt) - xyz[:, 2] * np.sin(tilt)
+    path = np.column_stack((xyz[:, 0], y))
+    return rotate(path, .14 + .065 * (t - 34)) * radius + np.asarray(center)
+
+
+def box_pair(t):
+    extrusion = progress(t, 3.0, 8.1)
+    unfold = .04 + .96 * progress(t, .65, 3.75)
+    yaw = .14 + .75 * extrusion + .34 * (t - 8) * extrusion
+    tilt = .09 + extrusion * (.43 + .16 * np.sin(.43 * t))
+    depart = progress(t, 13.6, 19.6)
+    swing = progress(t, 19.6, 25.4)
+    size = .44 - .14 * depart
+    primary = cube(yaw, tilt, extrusion, size, .09 + .14 * np.sin(.31 * t))
+    primary[:, 1] *= unfold
+    primary += [-.32 * depart, .15 * swing]
+    emerge = progress(t, 7.5, 12.55)
+    twin = cube(yaw - emerge * (.62 + .55 * np.sin(.50 * t)), tilt + .16,
+                extrusion, size * (.99 - .50 * emerge + .26 * depart),
+                .09 + .14 * np.sin(.31 * t) - .27 * depart)
+    twin[:, 1] *= unfold
+    twin += [.48 * depart - .28 * swing, .13 * depart - .47 * swing]
+    return primary, blend(primary, twin, emerge)
+
+
+def shell_pair(t):
+    opening = progress(t, 34, 40)
+    split = progress(t, 44, 49.5)
+    orbit = progress(t, 49.5, 55.8)
+    close = progress(t, 55.8, 58.0)
+    extinguish = 1 - progress(t, 58, 59.95)
+    center = np.array([-.18 * split * (1 - close), .08 * split * (1 - close)])
+    primary = globe(t, opening * (1 - .97 * close), .58 * extinguish, center=center)
+    satellite = globe(t, opening * .9, .25 * extinguish, center=(.03, -.02), spin=.54)
+    departing = globe(t + 5, .86, (.25 + .07 * np.sin(np.pi * orbit)) * extinguish,
+                      center=(.48 - .55 * orbit, -.16 + .46 * np.sin(np.pi * orbit)),
+                      spin=.54 + .2 * orbit)
+    secondary = blend(satellite, departing, split)
+    secondary = blend(secondary, globe(t, opening, .27 * extinguish,
+                                       center=center, spin=.54), close)
+    return primary, secondary
+
+
+def frame_waveform(t):
+    if t < 29:
+        first, second = box_pair(t)
+    elif t < 34:
+        boxes = box_pair(t)
+        rings = (globe(t, 0, .58),
+                 globe(t, 0, .29, center=(.04, -.02), spin=.54))
+        amount = progress(t, 29, 34)
+        first = blend(boxes[0], rings[0], amount)
+        second = blend(boxes[1], rings[1], amount)
     else:
-        sail = .10 + .90 * progress(t, 1.25, 5.0)
-        hull = .16 + .84 * progress(t, .12, 2.1)
-        position = -.31 + .66 * progress(t, 6.25, 13.75)
-    deck, mast = -.12, -.09
-    head = deck + 1.14 * sail
-    foot = deck + .08 * sail
-    vertices = [(-1, deck), (-.66, deck-.36*hull), (.54, deck-.36*hull),
-                (1, deck+.07*hull), (mast, deck), (mast, head),
-                (-.82, foot), (mast, foot), (mast, head-.14*sail),
-                (.67, foot), (mast+.08, foot), (mast, deck), (-1, deck)]
-    points = np.array(vertices)
-    angle = .065*np.sin(TAU*t/5) * sail
-    rotation = np.array([[np.cos(angle), np.sin(angle)], [-np.sin(angle), np.cos(angle)]])
-    points = points @ rotation
-    scale = .74
-    if returning:
-        scale *= 1 - progress(t, 57.5, 59.91)
-    return points * scale + [position, -.09 + .043*np.sin(TAU*t/5)*sail]
+        first, second = shell_pair(t)
+    return np.vstack((first, second))
 
 
-def compass(t):
-    # A needle attached to the rim at its tip provides a continuous beam path.
-    u = t - 15
-    angle = np.pi*(.5 - 1.24*progress(u, .4, 5.0) + .81*progress(u, 5.0, 8.75))
-    angles = np.linspace(angle, angle+TAU, 145)
-    # Four broad index marks survive the harmonic rounding at performance pitch.
-    radii = .89 - .065*np.maximum(0,np.cos(4*angles))**18
-    ring = np.column_stack((np.cos(angles), np.sin(angles))) * radii[:,None]
-    forward = np.array([np.cos(angle),np.sin(angle)])
-    flank = np.array([-forward[1],forward[0]])
-    along = [.17, .28, -.63, -.63, .28, .17, radii[0]]
-    across = [.34, .087, .087, -.087, -.087, -.34, 0]
-    needle = np.outer(along, forward) + np.outer(across, flank)
-    points = np.vstack((ring, needle))
-    tilt = .24 + .86*np.sin(np.pi*progress(u, 0, 10))
-    points[:,0] *= np.cos(tilt)
-    points[:,1] += .20*ring[0,0]*points[:,0]
-    return points * (.80 + .10*progress(u, 0, 3))
+def dust_amount(t):
+    return progress(t, 24.7, 28.8) * (1 - progress(t, 32.0, 35.15))
 
 
-def glider(t):
-    # Coordinates in flight direction, wing span and height. The two wing
-    # tips rotate around the longitudinal crease during the refrain.
-    open_wings = .57 + .43*progress(t, 32.5, 37.5)
-    # Bank through edge-on into a reversed silhouette on the peak A.
-    bank = (.32 + 1.21*progress(t, 37.5, 41.25)
-            + 1.30*progress(t, 41.25, 45.46875) - .65*progress(t, 46.25, 49.4))
-    span = open_wings*np.array([0, 1, .13, 0, -.13, -1, 0, .13, 0, -.13, 0])
-    height = np.array([0, .20, -.02, -.25, -.02, .20, 0, -.02, -.25, -.02, 0])
-    length = np.array([1.12, -.87, -.59, -.48, -.59, -.87, 1.12, -.59, -.48, -.59, 1.12])
-    vertical = span*np.cos(bank) + height*np.sin(bank)
-    depth = height*np.cos(bank) - span*np.sin(bank)
-    x = length + .34*span
-    y = vertical*.81 + .23*length
-    projection = 1/(1-.19*depth)
-    scale = (.42 + .10*progress(t, 25, 32.5) + .36*progress(t, 32.5, 37.5))
-    travel = progress(t, 25.6, 32.5)
-    settle = progress(t, 32.5, 37.5)
-    center = [-.59 + 1.10*travel - .53*settle,
-              -.26 + .53*travel + .13*np.sin(np.pi*travel) - .28*settle]
-    return np.column_stack((x,y))*projection[:,None]*scale + center
-
-
-def waveform(t):
-    if t < 15 or t >= 50:
-        points = boat(t, t >= 50)
-    elif t < 25:
-        points = compass(t)
-    else:
-        points = glider(t)
-    lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
-    distance = np.r_[0., np.cumsum(lengths)]
-    where = np.arange(TABLE)*distance[-1]/TABLE
-    wave = np.column_stack([np.interp(where,distance,axis) for axis in points.T])
-    # Smooth corners with a periodic low-pass, retaining the silhouette while
-    # suppressing the upper partials. The slow offsets place the craft in the frame.
-    harmonics = np.arange(TABLE//2+1)
-    taper = np.exp(-(harmonics/21)**4)
-    return np.fft.irfft(np.fft.rfft(wave,axis=0)*taper[:,None],n=TABLE,axis=0)
-
-
-def lead(t):
+def lead_points(t):
     phase, gate, accent = lead_controls(t)
-    phase = phase * TABLE/TAU
-    index = np.floor(phase).astype(int)
-    fraction = (phase-index)[:,None]
+    phase_index = phase * TABLE / TAU
+    index = np.floor(phase_index).astype(int) % TABLE
+    fraction = (phase_index % 1)[:, None]
     result = np.empty((len(t), 2), np.float32)
-    block = RATE//TICKS
-    current = waveform(0)
-    for i in range(0,len(t),block):
-        following = waveform((i+block)/RATE)
-        end = min(i+block,len(t))
-        key = index[i:end] % TABLE
-        next_key = (key+1) % TABLE
-        f = fraction[i:end]
-        first = current[key] + (current[next_key]-current[key])*f
-        last = following[key] + (following[next_key]-following[key])*f
-        result[i:end] = first + (last-first)*(np.arange(end-i)/block)[:,None]
+    block = RATE // FPS
+    current = frame_waveform(0)
+    for start in range(0, len(t), block):
+        end = min(start + block, len(t))
+        following = frame_waveform(end / RATE)
+        key = index[start:end]
+        next_key = (key + 1) % TABLE
+        first = blend(current[key], current[next_key], fraction[start:end])
+        last = blend(following[key], following[next_key], fraction[start:end])
+        result[start:end] = blend(first, last, (np.arange(end - start) / block)[:, None])
         current = following
-    envelope = .72 + .27*gate + .03*accent
-    return result * envelope[:,None]
+
+    amount = dust_amount(t)
+    active = amount > 0
+    p = phase[active]
+    # Slowly beating partials fill the exposure with grains, with no broadband
+    # jumps between distant points. The stereo fundamentals carry the note.
+    grains = np.column_stack((
+        .30 * np.cos(p) + .21 * np.sin(1.506 * p) + .15 * np.cos(3.013 * p)
+        + .11 * np.sin(7.73 * p) + .08 * np.cos(11.41 * p),
+        .31 * np.sin(1.003 * p) + .22 * np.cos(2.498 * p) + .14 * np.sin(4.013 * p)
+        + .10 * np.cos(8.17 * p) + .08 * np.sin(12.37 * p)))
+    whirl = .58 * np.sin(.93 * t[active])
+    c, s = np.cos(whirl), np.sin(whirl)
+    x, y = grains.T
+    grains = np.column_stack((x * c - y * s, x * s + y * c))
+    result[active] = blend(result[active], grains, amount[active, None])
+    return result * (.86 + .13 * gate + .01 * accent)[:, None]
 
 
 def tone(mix, beat, length, note, gain, pan, attack, release, overtone):
@@ -236,9 +264,10 @@ def tone(mix, beat, length, note, gain, pan, attack, release, overtone):
         return
     count = min(len(mix) - start, round(length * BEAT * RATE))
     t = np.arange(count) / RATE
-    phase = TAU * hz(note) * t
+    phase = TAU * hz(note) * t + .035*np.sin(TAU*.17*t)
     envelope = ease(t / attack) * ease((length * BEAT - t) / release)
-    wave = (np.sin(phase) + overtone * np.sin(2 * phase + .3)) * (gain * envelope)
+    wave = (np.sin(phase) + overtone*np.sin(2*phase+.3)
+            + .12*np.sin(3*phase+.7) + .055*np.sin(4*phase+.2)) * (gain*envelope)
     mix[start:start + count, 0] += wave * (1 - pan)
     mix[start:start + count, 1] += wave * (1 + pan)
 
@@ -272,11 +301,11 @@ def accompaniment(mix):
     rng = np.random.default_rng(46)
     for bar, (root, fifth, low, middle, high) in enumerate(HARMONY):
         at = 4 * bar
-        if 2 <= bar < 10 or 14 <= bar < 20:
+        if 2 <= bar < 20:
             for when, pitch, length, gain in ((0, root, 1.38, .072), (1.75, fifth, .48, .037),
                                               (2.5, root, 1.16, .057)):
                 tone(mix, at + when, length, pitch, gain, .07, .018, .15, .23)
-            percussion = .74 if 18 <= bar < 20 else 1
+            percussion = .62 if 10 <= bar < 14 else .74 if 18 <= bar < 20 else 1
             hit(mix, at, .094 * percussion, "kick", rng)
             hit(mix, at + 2.5, .070 * percussion, "kick", rng)
             hit(mix, at + 1, .027 * percussion, "clap", rng)
@@ -298,10 +327,30 @@ def accompaniment(mix):
             hit(mix, at + 3.5, .032, "hat", rng)
 
 
+def air_bursts(mix):
+    rng = np.random.default_rng(202)
+    sos = signal.butter(3, [7000, 16500], btype="bandpass", fs=RATE, output="sos")
+    count = round(.038*RATE)
+    envelope = np.exp(-np.arange(count)/(RATE*.013))*ease(np.arange(count)/(RATE*.0015))
+    for bar in range(24):
+        if not (0 <= bar < 4 or 10 <= bar < 14 or 22 <= bar < 24):
+            continue
+        gain = .027 if 10 <= bar < 14 else .016
+        for beat in (.5, 1.5, 2.75, 3.5):
+            start = round((bar*4+beat)*BEAT*RATE)
+            end = min(len(mix), start+count)
+            if start >= len(mix):
+                break
+            noise = rng.normal(0, 1, (end-start, 2))
+            burst = signal.sosfilt(sos, noise, axis=0)*envelope[:end-start, None]*gain
+            mix[start:end] += burst
+
+
 def master(path, duration):
     t = np.arange(round(duration * RATE)) / RATE
-    xy = lead(t)
+    xy = lead_points(t)
     accompaniment(xy)
+    air_bursts(xy)
     xy *= (ease(t / .041) * ease((len(t) / RATE - t) / .17))[:, None]
     peak = max(np.abs(signal.resample_poly(xy[max(0,i-32):i+RATE+32], 4, 1, axis=0)).max()
                for i in range(0,len(xy),RATE))
@@ -310,38 +359,24 @@ def master(path, duration):
 
 
 class Scope:
-    """Render the beam on a 60 Hz display with a fast phosphor decay."""
+    """Render one sample-cycle as phosphor dots without frame-to-frame trails."""
 
     def __init__(self):
-        self.exposure = np.zeros((SIZE, SIZE), np.uint8)
-        self.stroke = np.zeros_like(self.exposure)
-        self.persistence = np.zeros_like(self.exposure)
+        self.core = np.zeros((SIZE, SIZE, 3), np.uint8)
 
-        ramp = np.arange(256) / 255
-        self.palette = np.round(np.stack((239 * ramp ** .84, 246 * ramp ** .72,
-                                         213 * ramp ** 1.51), axis=1)).astype(np.uint8)[:, None, :]
-
-    def draw(self, xy):
-        # Fixed-point coordinates preserve subpixel alignment of successive sweeps.
-        points = np.rint((xy * [1, -1] * (SIZE * .54) + SIZE / 2) * 16).astype(np.int32)
-        self.exposure.fill(0)
-        intensity = round(100 * float(ease(np.ptp(xy, axis=0).max() / .033)))
-        cuts = np.linspace(0, len(points) - 1, 5, dtype=int)
-        if intensity:
-            for first, last in zip(cuts[:-1], cuts[1:]):
-                self.stroke.fill(0)
-                cv2.polylines(self.stroke, [points[first:last + 1]], False, intensity, 2,
-                              cv2.LINE_AA, shift=4)
-                cv2.add(self.exposure, self.stroke, dst=self.exposure)
-
-        cv2.addWeighted(self.persistence, .25, self.exposure, .75, 0, dst=self.persistence)
-        halo = cv2.resize(self.persistence, (SIZE // 3, SIZE // 3), interpolation=cv2.INTER_AREA)
-        halo = cv2.GaussianBlur(halo, (17, 17), 4.0)
-        halo = cv2.resize(halo, (SIZE, SIZE), interpolation=cv2.INTER_LINEAR)
-        texture = cv2.GaussianBlur(self.persistence, (9, 9), 1.9)
-        light = cv2.addWeighted(self.persistence, .77, texture, .44, 0)
-        light = cv2.addWeighted(light, 1, halo, .88, 0)
-        return cv2.add(cv2.applyColorMap(light, self.palette), (13, 9, 7, 0))
+    def draw(self, xy, time):
+        self.core.fill(0)
+        points = np.rint(xy*np.array([1, -1])*(SIZE*.66)+SIZE/2).astype(np.int32)
+        cloud = 25 <= time < 33
+        for i, (x, y) in enumerate(points):
+            if cloud:
+                color = (146, 207, 241) if i % 2 else (189, 226, 247)
+            else:
+                color = (112, 211, 185) if i % 2 else (211, 246, 226)
+            radius = 3 if i % 12 == 0 else 2
+            cv2.circle(self.core, (int(x), int(y)), radius, color, -1, cv2.LINE_AA)
+        halo = cv2.GaussianBlur(self.core, (0, 0), 1.45)
+        return cv2.addWeighted(halo, .36, self.core, 1.0, 0)
 
 
 def render(wav, movie):
@@ -349,9 +384,10 @@ def render(wav, movie):
     if rate != RATE or xy.shape[1] != 2 or len(xy) % (rate // FPS):
         raise ValueError("Expected frame-aligned 48 kHz stereo PCM")
 
-    # The beam connects consecutive PCM samples in acquisition order.
     stride = rate // FPS
     scope = Scope()
+    t = np.arange(len(xy))/rate
+    phase = lead_controls(t)[0]
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{SIZE}x{SIZE}",
                "-framerate", str(FPS), "-i", "-", "-i", str(wav),
@@ -360,7 +396,20 @@ def render(wav, movie):
                "-movflags", "+faststart", "-metadata", f"title={TITLE}", str(movie)]
     with subprocess.Popen(command, stdin=subprocess.PIPE) as process:
         for i in range(0, len(xy), stride):
-            frame = scope.draw(xy[i:i + stride + 1])
+            end_frame = min(i+stride, len(xy))
+            cycle = np.ceil(phase[i]/TAU)*TAU
+            start = np.searchsorted(phase, cycle, side="left")
+            if start >= end_frame:
+                start = i
+                cycle = phase[start]
+            end = np.searchsorted(phase, cycle+TAU, side="left")
+            end = min(max(end, start+2), end_frame)
+            indexes = np.linspace(start, end-1, 240)
+            cycle_xy = np.column_stack([
+                np.interp(indexes, np.arange(start, end), xy[start:end, channel])
+                for channel in range(2)
+            ])
+            frame = scope.draw(cycle_xy, i/rate)
             process.stdin.write(frame.tobytes())
             if i % (stride * FPS * 10) == 0:
                 print(f"Rendered {i // (stride * FPS):02d} seconds", flush=True)
