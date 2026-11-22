@@ -83,23 +83,23 @@ def hz(note):
     return 440 * 2 ** ((note - 69) / 12)
 
 
-def bass_phase(t):
-    # Every bass period contains one unmasked XY traversal. Hold the root
-    # through the keyboard's rests and change it legato at the next bar.
-    freq = np.empty(len(t), dtype=np.float64)
-    prev = hz(HARMONY[0][0])
-    for bar, chord in enumerate(HARMONY):
-        start = round(bar * BAR * RATE)
-        if start >= len(t):
-            break
-        end = min(len(t), round((bar + 1) * BAR * RATE))
-        target = hz(chord[0])
-        freq[start:end] = blend(prev, target, ease((t[start:end] - bar * BAR) / .07))
-        prev = target
-    return np.cumsum(freq) / RATE
+def scan_note(t):
+    # Share the melodic register with the opening point study. During the
+    # interlude the scan settles onto a lower, held bass pedal.
+    pitch = np.full(len(t), float(MELODY[0][0][1] - 12))
+    for bar, phrase in enumerate(MELODY):
+        for beat, note, _ in phrase:
+            start = round((bar * 4 + beat) * BEAT * RATE)
+            if start >= len(t):
+                break
+            prev = pitch[max(0, start - 1)]
+            target = HARMONY[bar][0] if 10 <= bar < 14 else note - 12
+            glide = min(len(t) - start, round(.029 * RATE))
+            pitch[start:] = target
+            pitch[start:start+glide] = blend(prev, target, ease(np.arange(glide) / glide))
+    return np.cumsum(hz(pitch)) / RATE
 
-# Both bodies are scanned during one bass period. Cube edges form a closed
-# walk, so changing faces never sends the beam through the middle of a face.
+
 TABLE = 768
 BODY = 384
 U = np.arange(BODY) / BODY
@@ -209,48 +209,51 @@ def frame_waveform(t):
     return np.vstack((first, second))
 
 
-SCAN_START = .10
-SCAN_LENGTH = .43
-
-
 def scan_voice(t, phase):
-    # Enter from the centre, trace both bodies, then return to the centre
-    # before the ensemble opens up in the rest of the bass cycle.
-    fraction = phase % 1
-    key = np.clip((fraction - SCAN_START) / SCAN_LENGTH, 0, 1) * (TABLE - 1)
+    # One continuous, pitched traversal. Round the return between the two
+    # bodies and suppress the steep corners' upper partials before synthesis.
+    key = (phase % 1) * TABLE
     index = key.astype(int)
     weight = (key - index)[:, None]
-    next_index = np.minimum(index + 1, TABLE - 1)
+    next_index = (index + 1) % TABLE
     block = RATE // FPS
-    current = frame_waveform(0)
+    harmonics = np.arange(TABLE // 2 + 1)
+    taper = np.exp(-(harmonics / 26) ** 4)
+    def rounded(time):
+        return np.fft.irfft(np.fft.rfft(frame_waveform(time), axis=0) * taper[:, None],
+                            n=TABLE, axis=0)
+    current = rounded(0)
     result = np.empty((len(t), 2), np.float32)
     for i in range(0, len(t), block):
         j = min(i + block, len(t))
-        following = frame_waveform(j / RATE)
+        following = rounded(j / RATE)
         a, b = index[i:j], next_index[i:j]
         this = blend(current[a], current[b], weight[i:j])
         after = blend(following[a], following[b], weight[i:j])
         result[i:j] = blend(this, after, (np.arange(j - i) / block)[:, None])
         current = following
-    draw = ease((fraction - .025) / .07) * (1 - ease((fraction - .54) / .08))
-    return result * draw[:, None]
+    return result
 
 
 def add_note(mix, beat, beats, note, gain, pan, voice):
     start = round(beat * BEAT * RATE)
     sustain = beats * BEAT
-    release = {"keys": .29, "reed": .31, "bass": .12, "bell": .46}[voice]
+    release = {"keys": .29, "reed": .31, "bass": .12, "bell": .46, "flute": .27}[voice]
     count = min(len(mix) - start, round((sustain + release) * RATE))
     if count <= 0:
         return
     age = np.arange(count) / RATE
     p = TAU * hz(note) * age
     tail = 1 - ease((age - sustain) / release)
-    if voice == "keys":
+    if voice == "flute":
+        vibrato = .12 * ease(age/.32) * np.sin(TAU*4.6*age)
+        wave = np.sin(p + vibrato) + .085*np.sin(2*p + 2*vibrato)
+        wave *= ease(age/.085) * tail
+    elif voice == "keys":
         # Tine attack, then a warm, rapidly darkening fundamental.
         attack = ease(age / .008)
-        body = np.sin(p + 1.15 * np.exp(-age / .105) * np.sin(2*p))
-        wave = attack * tail * np.exp(-age / .57) * (body + .17*np.sin(2.002*p))
+        body = np.sin(p + .35 * np.exp(-age / .085) * np.sin(2*p))
+        wave = attack * tail * np.exp(-age / .57) * (body + .17*np.sin(2*p))
     elif voice == "bell":
         wave = (.72*np.sin(p) + .22*np.sin(2.72*p) * np.exp(-age/.18)
                 + .13*np.sin(4.08*p) * np.exp(-age/.085))
@@ -277,7 +280,7 @@ def hit(mix, beat, strength, kind, rng):
         pan = .06
     else:
         noise = rng.uniform(-1, 1, count)
-        high = np.diff(noise, prepend=0)
+        high = signal.sosfilt(signal.butter(2, [1400, 7600], btype="bandpass", fs=RATE, output="sos"), noise)
         if kind == "clap":
             bounce = np.exp(-((t - .016) / .005) ** 2)
             wave = (.57 * high + .44 * np.sin(TAU * 171 * t)) * np.exp(-30 * t) + .27 * high * bounce
@@ -298,17 +301,19 @@ def ensemble(length):
     for bar, (root, fifth, low, mid, high) in enumerate(HARMONY):
         at = 4 * bar
         for beat, note, gate in MELODY[bar]:
-            add_note(keys, at + beat, gate, note - (12 if bar < 2 else 0),
-                     .40 if beat == 0 else .34, -.20, "keys")
+            if 10 <= bar < 14:
+                add_note(keys, at+beat, gate, note - 12, .27, -.12, "flute")
+            else:
+                add_note(keys, at+beat, gate, note, .29 if beat == 0 else .24, -.18, "keys")
         driving = 2 <= bar < 10 or 14 <= bar < 22
         groove = ((0, root, .85), (1.75, fifth, .33), (2.55, root+12, .49))
         if not driving:
             groove = ((0, root, 2.3),)
         for beat, note, gate in groove:
-            add_note(rhythm, at + beat, gate, note, .42, 0, "bass")
+            add_note(rhythm, at + beat, gate, note, .19, 0, "bass")
         if driving:
-            hit(rhythm, at, .56, "kick", rng)
-            hit(rhythm, at+2.5, .33, "kick", rng)
+            hit(rhythm, at, .29, "kick", rng)
+            hit(rhythm, at+2.5, .19, "kick", rng)
             hit(rhythm, at+1.03, .21, "clap", rng)
             hit(rhythm, at+3.03, .27, "clap", rng)
             for beat, gain in ((.55,.07), (1.54,.10), (2.56,.055), (3.55,.12)):
@@ -331,45 +336,64 @@ def ensemble(length):
     return keys, rhythm, answers
 
 
+def scanner_mix(t):
+    phase = scan_note(t)
+    bridge = progress(t, 24.84, 25.08) * (1 - progress(t, 34.84, 35.12))
+    return scan_voice(t, phase) * (.66 - .29 * bridge[:, None])
+
+
+def master_envelope(t):
+    return ease(t / .041) * ease((len(t) / RATE - t) / .17)
+
+
+def isolate_scanner(xy, t):
+    # The final fade leaves a short solo keyboard release after the drawing
+    # has closed. Its known samples calibrate the common mastering gain.
+    bed = sum(ensemble(len(t)))
+    bed *= master_envelope(t)[:, None]
+    if len(t) / RATE >= 59.99:
+        reference = bed[-1600:]
+        measured = xy[-1600:]
+    else:
+        # An excerpt may end on a full ensemble chord.
+        reference = bed + scanner_mix(t) * master_envelope(t)[:, None]
+        measured = xy
+    gain = np.sum(reference * measured, dtype=np.float64) / np.sum(reference**2, dtype=np.float64)
+    return xy - gain * bed
+
+
 def master(path, duration):
     t = np.arange(round(duration * RATE)) / RATE
-    phase = bass_phase(t)
-    xy = .56 * scan_voice(t, phase)
-    fraction = phase % 1
-    # Reopen musical voices after the last edge. The raw stereo trace has
-    # a clean traversal on every bass cycle, even on a snare hit.
-    bed = 1 - ease((fraction - .025) / .065) * (1 - ease((fraction - .54) / .095))
+    xy = scanner_mix(t)
     for stem in ensemble(len(t)):
-        xy += stem * bed[:, None]
-
-
-    xy *= (ease(t / .041) * ease((len(t) / RATE - t) / .17))[:, None]
+        xy += stem
+    xy *= master_envelope(t)[:, None]
     peak = max(np.abs(signal.resample_poly(xy[max(0,i-32):i+RATE+32], 4, 1, axis=0)).max()
                for i in range(0,len(xy),RATE))
-    xy *= 10 ** (-1.65 / 20) / peak
+    # Match the preceding ensemble mix's listening level. The geometry
+    # has a larger crest-to-average ratio change than its peak alone shows.
+    xy *= 10 ** (-6.15 / 20) / peak
     sf.write(path, xy, RATE, subtype="PCM_24")
 
 
-# Fractional-phase sampling gives every dot a stable material coordinate.
-# Averaging five neighbouring bass traversals reduces interpolation error at
-# corners. It operates on the quantized stereo master, in signal coordinates.
 DOTS = 256
-DOT_PHASE = SCAN_START + SCAN_LENGTH * (np.arange(DOTS) + .5) / DOTS
+DOT_PHASE = (np.arange(DOTS) + .5) / DOTS
 
 
 def sampled_dots(xy, phase, middle):
-    position = phase[middle] - SCAN_START - SCAN_LENGTH / 2
-    cycle = int(np.floor(position))
-    starts = np.clip(cycle + np.arange(-2, 4), 0, int(phase[-1] - .55))
-    targets = starts[:, None] + DOT_PHASE
-    right = np.clip(np.searchsorted(phase, targets), 1, len(xy) - 1)
+    # Fold the stereo master over a short Hann exposure in wall time.
+    # Continuous accompaniment averages down while phase-locked edges add.
+    radius = round(RATE * .095)
+    lo, hi = max(0, middle-radius), min(len(xy)-1, middle+radius)
+    cycles = np.arange(np.ceil(phase[lo]), np.floor(phase[hi]))
+    targets = cycles[:, None] + DOT_PHASE
+    right = np.clip(np.searchsorted(phase, targets), 1, len(xy)-1)
     left = right - 1
     w = (targets - phase[left]) / (phase[right] - phase[left])
     samples = blend(xy[left], xy[right], w[:, :, None])
-    kernel = np.array([1, 4, 6, 4, 1]) / 16
-    left_scan = np.tensordot(kernel, samples[:-1], axes=1)
-    right_scan = np.tensordot(kernel, samples[1:], axes=1)
-    return blend(left_scan, right_scan, position - cycle)
+    age = (left + w - middle) / radius
+    weight = .5 + .5*np.cos(np.pi * np.clip(age, -1, 1))
+    return np.sum(samples * weight[:, :, None], axis=0) / weight.sum(axis=0)[:, None]
 
 
 class Scope:
@@ -379,7 +403,7 @@ class Scope:
     def draw(self, xy):
         self.core.fill(0)
         # Subpixel placement and equal luminance avoid sparkling edges.
-        pixels = (xy * [1, -1] * (SIZE * 1.10) + SIZE / 2) * 16
+        pixels = (xy * [1, -1] * (SIZE * 1.10 * 10**(4.5/20)) + SIZE / 2) * 16
         for x, y in np.rint(pixels).astype(int):
             cv2.circle(self.core, (x, y), 29, (212, 239, 223), -1, cv2.LINE_AA, 4)
         halo = cv2.GaussianBlur(self.core, (0, 0), 1.65)
@@ -394,7 +418,8 @@ def render(wav, movie):
     stride = rate // FPS
     scope = Scope()
     t = np.arange(len(xy))/rate
-    phase = bass_phase(t)
+    xy = isolate_scanner(xy, t)
+    phase = scan_note(t)
     command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
                "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{SIZE}x{SIZE}",
                "-framerate", str(FPS), "-i", "-", "-i", str(wav),
