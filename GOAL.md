@@ -1,20 +1,43 @@
-Create and deliver a complete, original second version of Phase Shift, an oscilloscope music piece with a distinctive, hummable lead melody and animation encoded in the same stereo audio. Aim for 35–50 seconds. Preserve the first version and its generator. Build, render, verify, and refine v2 in this run.
+# Phase Shift v3
 
-## Context
+完成一部约 60 秒的原创 XY 视听作品。音乐单听也有旋律、层次和段落，画面静音时也能跟住一个形体如何变化，合看时能在乐句的关键处看清动作的转折。保留 v1、v2 的生成器和成品。
 
-- First version: `make_phase_shift.py`, `Phase Shift.wav`, and `Phase Shift.mp4`. If the renders are missing, regenerate them from the script.
-- Local lossless references: Atom Delta's `references/oscillofun-wave.flac` and BUS ERROR Collective's `references/Primer Final.flac`. Use both to study how rhythmic phrasing and transitions coincide with changes in the XY trace. Inspect selected passages by plotting their stereo samples and analyzing timing or pitch where useful. Compose all musical and visual material for v2 from scratch.
+## 当前版本与待验收项
 
-## Creative direction
+| Git 提交 | 用途 |
+| --- | --- |
+| `559a08b` | 当前成片。恢复较明亮的主题音色，让伴奏自然延音，并在约 25 秒引入慢起音的笛声。已核对音画同步，实际舒适度和音色转折仍待试听。 |
+| `ca01ddd` | 较早的双立方体点阵版。用来比较较高的音区和约 25 秒的音色变化。 |
+| `cf8d1b8` | 用户贴出的临时目录 MP4 所对应的版本。用来比较双立方体的动作稳定性，以及用户指出的刺耳感和较弱的音色转折。 |
+| `8e87282` | 帆船版。可回看曾出现轮廓叠影的问题。 |
 
-- Introduce a short lead hook within the first eight seconds. Give it a deliberate rhythm and a recognizable pitch contour, with a clear point of arrival. Bring it back at least twice, including once after a contrasting section. Keep its defining rhythm and contour audible when the surrounding timbre, harmony, or geometry changes.
-- Give the hook room to stand out. Use contrast in register, pacing, or dynamics to shape the other sections. Synchronize a few clear visual changes with the hook's entrances, accents, or cadence.
-- Write and arrange the music around the lead hook before finalizing the visuals. Shape the XY paths and supporting sounds together so that the melody stays prominent and the main outlines still read at normal playback speed. Choose the implementation and tools that best serve the piece.
+版本的实现细节和测量结果以制作记录为准。[音色修订与复核](<Phase Shift v3 final review.md>)
 
-## Deliverables and verification
+## 音乐
 
-- Save `Phase Shift v2.wav` as 48 kHz, 24-bit stereo PCM, with left mapped to X and right to Y. Verify its format and duration, and confirm that it has headroom and no clipping.
-- Save `Phase Shift v2.mp4` with synchronized stereo sound and an XY animation rendered directly from the final WAV samples. Inspect the rendered frames at the actual viewing size, including the hook's entrances, a scene transition, and the densest passage. Revise and render again if the main shapes blur together.
-- Deliver a reproducible generator or editable source with the render command and any dependencies. Keep v1 files intact.
-- Verify the hook against the rendered audio. Report its notes and rhythm, the timestamps of its first appearance and returns, and how you checked that the lead is still distinguishable after mixing. Use playback review if available. If you relied on signal analysis, state that and report the evidence you measured.
-- Finish with the file paths, how to regenerate the piece, and the checks you actually completed. Make reasonable, reversible decisions and carry the work through to the finished files.
+- 让主旋律有可辨认的节奏与回归。用低音、和声、短噪声或碎鼓建立有疏密变化的声部，听得出谁在领奏、谁在回答、哪里留有空隙。
+- 用较早版本的高音区作听感参照。评估旋律音区和刺耳感时，分别比较音高、起音、延音和持续的窄频峰。频谱用来核对音区和排查刺耳来源，具体让用户不舒服的频率尚未确定。
+- 让约 25 秒的变化在纯听时就能察觉。用音色、音区、起音或节奏密度拉开前后差异，再听约 35 秒主题回归是否自然。用相同响度对比候选和较早版本。
+
+## 画面
+
+- 以干净的散点表现几何形体。立方体转动或分离时，给眼睛一条可持续跟踪的棱、一个顶点或一个内框。旋转、平移和展开各有明确的方向和落点。留出停顿，让观众看清形体到达的姿态。
+- 参考《Primer》的五秒窗口。让一个动作经过可见的中间状态逐步显露下一层，例如窄带打开成球壳，再由同一处生出第二个形体。五秒是观察尺度，段落时长随动作和乐句安排。
+- 把大量散点用在有明确起点和去向的段落。密集时保留一处边缘或中心供视线追踪，重组时让轮廓逐步成形。检查连续播放中的点位抖动、亮度闪烁和虚线重影，尤其是换音和鼓点附近。
+- 让普通换音经过同一动作，把少数乐句入口、重拍和收束用于关键的展开、分离或停顿。用构图、尺度和留白给动作空间。
+
+## 参考片段
+
+以本地无损音频和对应录屏为基准。按连续约五秒观察动作和听音乐变化，将可复用的手法写进候选的具体段落。作品的旋律、编曲和几何设计保持原创。
+
+- 《Oscillofun》0:17.4–0:20.7。看内框、外框和连接棱怎样在转动、换音时仍可追踪。1:16.2–1:19.6 可参考平面缩放与错位的节奏。[本地音频](<references/oscillofun-wave.flac>)
+- 《Primer》开头可按 0–10、10–25、25–33、33–36、36–56 秒及其后粗分，再挑约五秒的连续片段比较。重点看 0:39.8–0:44 左右的窄带开成球壳、0:48–0:53 左右的第二形体移入空处，以及 2:41.5–2:48.1 外壳转开时如何保留中心。[本地音频](<references/Primer Final.flac>)
+
+[XY 动作研究](<XY 动作研究.md>) · [参考抽帧](<references/XY motion study.png>) · [网络研究](<网络研究.md>)
+
+## 复核与交付
+
+1. 先渲染覆盖本轮问题的 10–15 秒试片。抖动优先看 17–20 秒附近，音色优先听 23–28 秒并补听 35 秒的主题回归。用等响度试听和原速静音回放对比前后版本，用相邻帧和频谱定位问题。
+2. 渲染全片后分别做纯听、原尺寸原速静音观看和带声观看。按时间点记录旋律、声部、动作和音画关系。请一位独立评审先看候选与两部参考，再给分项判断。涉及新的参考问题时可交给另一位评审独立观察。根据实质问题复修，再由同一评审复查相关段落。播放条件受限时，记录实际完成的检查与待试听、待观看的项目。
+3. 交付 `Phase Shift v3.wav`，48 kHz、24 位立体声 PCM，左 X、右 Y。核对时长、声道、真峰值和削波。交付约 60 秒的 `Phase Shift v3.mp4`，从最终 WAV 提取 XY 轨迹，并在编码后核对音画对齐。若画面提取方式与普通示波器的显示有差异，写明差异。
+4. 交付可独立运行的 `make_phase_shift_v3.py` 和重建命令、依赖。每次有可回放的交付版本，提交生成器、WAV、MP4 与复核记录，让版本能从 Git 一起恢复。
